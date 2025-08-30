@@ -1,25 +1,34 @@
-import threading, time
-from inference import InferencePipeline
-from inference.core.interfaces.stream.sinks import render_boxes
+import cv2
+from ultralytics import YOLO
 
-API_KEY = "cKLJvDkcCOKqDCZirSTk"
+# 1. Muat model YOLO-World (otomatis download pertama kali)
+model = YOLO("yolov8x-world.pt")
 
-pipeline = InferencePipeline.init(
-    model_id="yolov8n-640",
-    video_reference=0,
-    on_prediction=render_boxes,
-    api_key=API_KEY
-)
+# 2. Daftar objek yang ingin dideteksi (bebas tambah/hapus)
+desired = ["person"]
 
-def run():
-    pipeline.start()
+# 3. Buka webcam
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-t = threading.Thread(target=run, daemon=True)
-t.start()
+# 4. Loop real-time
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-# Untuk berhenti: tekan Ctrl+C di shell
-try:
-    while t.is_alive():
-        time.sleep(1)
-except KeyboardInterrupt:
-    pipeline.terminate()
+    # 5. Inference YOLO-World
+    results = model.predict(frame, classes=desired, conf=0.25)
+
+    # 6. Gambar hasil
+    annotated = results[0].plot()
+    cv2.imshow("YOLO-World Webcam", annotated)
+
+    # 7. Keluar dengan 'q'
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# 8. Tutup
+cap.release()
+cv2.destroyAllWindows()
