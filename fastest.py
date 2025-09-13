@@ -1,6 +1,57 @@
 import cv2
 from ultralytics import YOLO
 import time
+import requests
+from threading import Thread
+import json
+import os
+
+class TelegramNotifier:
+    def __init__(self, bot_token, chat_id):
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        self.api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        self.last_notification_time = 0
+        self.notification_cooldown = 30  # detik antara notifikasi
+        
+    def send_message(self, message):
+        """Mengirim pesan ke Telegram"""
+        try:
+            payload = {
+                'chat_id': self.chat_id,
+                'text': message,
+                'parse_mode': 'HTML'
+            }
+            response = requests.post(self.api_url, data=payload, timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"Error sending Telegram message: {e}")
+            return False
+            
+    def should_send_notification(self):
+        """Memeriksa apakah sudah waktunya untuk mengirim notifikasi"""
+        current_time = time.time()
+        if current_time - self.last_notification_time > self.notification_cooldown:
+            self.last_notification_time = current_time
+            return True
+        return False
+
+def load_config():
+    """Memuat konfigurasi dari file atau environment variables"""
+    config = {
+        'bot_token': os.getenv('TELEGRAM_BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE'),
+        'chat_id': os.getenv('TELEGRAM_CHAT_ID', 'YOUR_CHAT_ID_HERE')
+    }
+    
+    # Coba load dari file config.json jika ada
+    try:
+        with open('config.json', 'r') as f:
+            file_config = json.load(f)
+            config.update(file_config)
+    except FileNotFoundError:
+        pass
+        
+    return config
 
 def ultra_fast_detection():
     # 1. Gunakan model terkecil
@@ -16,11 +67,16 @@ def ultra_fast_detection():
     # 3. Gym objects keywords
     gym_keywords = ["person", "weight", "dumbbell", "barbell", "treadmill"]
     
-    # 4. FPS tracking
+    # 4. Inisialisasi notifier Telegram
+    config = load_config()
+    notifier = TelegramNotifier(config['bot_token'], config['chat_id'])
+    
+    # 5. FPS tracking
     fps_counter = 0
     start_time = time.time()
     last_inference_time = 0
     cached_detections = []
+    object_count_history = []
     
     print("⚡ ULTRA FAST MODE - Target 30+ FPS")
     print("📷 Press 'q' to quit")
@@ -70,6 +126,33 @@ def ultra_fast_detection():
                 cached_detections = new_detections
                 last_inference_time = current_time
                 
+                # Simpan jumlah objek untuk riwayat
+                object_count_history.append(len(cached_detections))
+                if len(object_count_history) > 10:  # Simpan 10 pengukuran terakhir
+                    object_count_history.pop(0)
+                
+                # Kirim notifikasi jika jumlah objek berubah signifikan
+                if len(object_count_history) >= 5 and notifier.should_send_notification():
+                    avg_count = sum(object_count_history) / len(object_count_history)
+                    if avg_count > 0:
+                        # Buat pesan notifikasi
+                        class_counts = {}
+                        for det in cached_detections:
+                            cls = det['class']
+                            class_counts[cls] = class_counts.get(cls, 0) + 1
+                        
+                        message = "🏋️ <b>Deteksi Peralatan Gym</b>\n"
+                        message += f"📊 Total objek terdeteksi: {int(avg_count)}\n\n"
+                        
+                        for obj_type, count in class_counts.items():
+                            message += f"• {obj_type.capitalize()}: {count}\n"
+                        
+                        message += f"\n⏰ {time.strftime('%H:%M:%S')}"
+                        
+                        # Kirim notifikasi di thread terpisah agar tidak mengganggu deteksi
+                        Thread(target=notifier.send_message, args=(message,)).start()
+                        print("📤 Notifikasi Telegram terkirim!")
+                
             except Exception as e:
                 print(f"⚠️ Inference error: {e}")
         
@@ -111,11 +194,5 @@ def ultra_fast_detection():
 
 # Jalankan versi yang diinginkan
 if __name__ == "__main__":
-    # Uncomment salah satu:
-    
-    # Option 1: Threading version (smooth tapi complex)
-    # detector = OptimizedGymDetector()
-    # detector.run()
-    
     # Option 2: Ultra fast version (simple dan cepat)
     ultra_fast_detection()
