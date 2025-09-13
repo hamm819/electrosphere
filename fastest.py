@@ -54,8 +54,8 @@ def load_config():
     return config
 
 def ultra_fast_detection():
-    # 1. Gunakan model terkecil
-    model = YOLO("yolov8s-world.pt")  # NANO version - paling cepat
+    # 1. Gunakan model YOLO yang sudah dilatih dengan dataset COCO yang lebih lengkap
+    model = YOLO("yolov8m.pt")  # Gunakan model medium untuk deteksi lebih baik
     
     # 2. Setup webcam dengan optimasi maksimal
     cap = cv2.VideoCapture(0)
@@ -64,8 +64,52 @@ def ultra_fast_detection():
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)       # Minimal buffer
     
-    # 3. Gym objects keywords
-    gym_keywords = ["person", "weight", "dumbbell", "barbell", "treadmill"]
+    # 3. Daftar objek gym yang ingin dideteksi dengan mapping yang lebih baik
+    # Mapping class ID COCO ke nama objek gym
+    gym_objects_mapping = {
+        # Person
+        0: "person",
+        
+        # Sports equipment
+        32: "sports ball",      # Bisa untuk medicine ball
+        33: "kite",             # Kadang salah deteksi untuk beberapa alat
+        39: "bottle",           # Botol minum
+        41: "cup",              # Gelas
+        43: "knife",            # Bisa untuk alat cutting (dalam konteks gym)
+        44: "spoon",            # Kadang terdeteksi untuk alat kecil
+        46: "wine glass",       # Gelas
+        47: "cup",              # Cangkir
+        48: "fork",             # Garpu
+        49: "knife",            # Pisau
+        50: "spoon",            # Sendok
+        51: "bowl",             # Mangkuk
+        
+        # Gym equipment (using closest matches)
+        57: "chair",            # Bisa untuk bench press
+        62: "tv",               # Monitor treadmill
+        63: "laptop",           # Monitor equipment
+        64: "mouse",            # Mouse
+        65: "remote",           # Remote control
+        66: "keyboard",         # Keyboard
+        67: "cell phone",       # Ponsel
+        72: "book",             # Buku catatan
+        73: "clock",            # Jam
+        74: "vase",             # Vas
+        75: "scissors",         # Gunting
+        76: "teddy bear",       # Bear (kadang untuk medicine ball)
+        77: "hair drier",       # Pengering rambut (kadang untuk alat)
+        78: "toothbrush",       # Sikat gigi (kadang untuk alat kecil)
+    }
+    
+    # Custom mapping untuk objek gym berdasarkan kemiripan visual
+    custom_gym_mapping = {
+        "bicycle": "stationary bike",      # Sepeda statis
+        "dumbbell": "dumbbell",            # Barbel
+        "sports ball": "medicine ball",    # Bola medicine
+        "chair": "bench press",            # Bench press
+        "bottle": "water bottle",          # Botol air
+        "tv": "treadmill display",         # Display treadmill
+    }
     
     # 4. Inisialisasi notifier Telegram
     config = load_config()
@@ -91,36 +135,43 @@ def ultra_fast_detection():
         fps_counter += 1
         current_time = time.time()
         
-        # Run inference hanya setiap 0.2 detik (5 FPS inference, 30 FPS display)
-        if current_time - last_inference_time > 0.2:
+        # Run inference hanya setiap 0.3 detik (3-4 FPS inference, 30 FPS display)
+        if current_time - last_inference_time > 0.3:
             try:
-                # Resize ke ukuran mini untuk inference super cepat
-                tiny_frame = cv2.resize(frame, (320, 240))
+                # Resize ke ukuran yang lebih besar untuk akurasi lebih baik
+                inference_frame = cv2.resize(frame, (480, 360))
                 
                 results = model.predict(
-                    tiny_frame, 
-                    conf=0.5,      # High confidence
+                    inference_frame, 
+                    conf=0.5,      # Confidence threshold
                     verbose=False,
-                    imgsz=320      # Explicit image size
+                    imgsz=480      # Ukuran image untuk inference
                 )
                 
                 # Filter dan scale hasil
                 new_detections = []
                 if results[0].boxes is not None:
-                    scale_x = frame.shape[1] / 320
-                    scale_y = frame.shape[0] / 240
+                    scale_x = frame.shape[1] / 480
+                    scale_y = frame.shape[0] / 360
                     
                     for box in results[0].boxes:
-                        class_name = results[0].names[int(box.cls[0])].lower()
+                        class_id = int(box.cls[0])
+                        confidence = float(box.conf[0])
                         
-                        # Quick gym object check
-                        if any(keyword in class_name for keyword in gym_keywords):
+                        # Cek apakah ini objek gym berdasarkan mapping
+                        if class_id in gym_objects_mapping:
+                            class_name = gym_objects_mapping[class_id]
+                            
+                            # Terapkan custom mapping untuk nama yang lebih spesifik
+                            if class_name in custom_gym_mapping:
+                                class_name = custom_gym_mapping[class_name]
+                            
                             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                             new_detections.append({
                                 'bbox': (int(x1*scale_x), int(y1*scale_y), 
                                         int(x2*scale_x), int(y2*scale_y)),
                                 'class': class_name,
-                                'conf': float(box.conf[0])
+                                'conf': confidence
                             })
                 
                 cached_detections = new_detections
@@ -132,26 +183,26 @@ def ultra_fast_detection():
                     object_count_history.pop(0)
                 
                 # Kirim notifikasi jika jumlah objek berubah signifikan
-                if len(object_count_history) >= 5 and notifier.should_send_notification():
+                if len(object_count_history) >= 5 and notifier.should_send_notification() and len(cached_detections) > 0:
                     avg_count = sum(object_count_history) / len(object_count_history)
-                    if avg_count > 0:
-                        # Buat pesan notifikasi
-                        class_counts = {}
-                        for det in cached_detections:
-                            cls = det['class']
-                            class_counts[cls] = class_counts.get(cls, 0) + 1
-                        
-                        message = "🏋️ <b>Deteksi Peralatan Gym</b>\n"
-                        message += f"📊 Total objek terdeteksi: {int(avg_count)}\n\n"
-                        
-                        for obj_type, count in class_counts.items():
-                            message += f"• {obj_type.capitalize()}: {count}\n"
-                        
-                        message += f"\n⏰ {time.strftime('%H:%M:%S')}"
-                        
-                        # Kirim notifikasi di thread terpisah agar tidak mengganggu deteksi
-                        Thread(target=notifier.send_message, args=(message,)).start()
-                        print("📤 Notifikasi Telegram terkirim!")
+                    
+                    # Buat pesan notifikasi
+                    class_counts = {}
+                    for det in cached_detections:
+                        cls = det['class']
+                        class_counts[cls] = class_counts.get(cls, 0) + 1
+                    
+                    message = "🏋️ <b>Deteksi Peralatan Gym</b>\n"
+                    message += f"📊 Total objek terdeteksi: {int(avg_count)}\n\n"
+                    
+                    for obj_type, count in class_counts.items():
+                        message += f"• {obj_type.capitalize()}: {count}\n"
+                    
+                    message += f"\n⏰ {time.strftime('%H:%M:%S')}"
+                    
+                    # Kirim notifikasi di thread terpisah agar tidak mengganggu deteksi
+                    Thread(target=notifier.send_message, args=(message,)).start()
+                    print("📤 Notifikasi Telegram terkirim!")
                 
             except Exception as e:
                 print(f"⚠️ Inference error: {e}")
@@ -163,7 +214,7 @@ def ultra_fast_detection():
             
             # Simple drawing - minimal operations
             cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(display_frame, f"{det['class']}", (x1, y1-10), 
+            cv2.putText(display_frame, f"{det['class']} {det['conf']:.2f}", (x1, y1-10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
         # Calculate FPS
